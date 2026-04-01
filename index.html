@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Air Quality Monitor</title>
+
+  <!--
+    Chart.js 4.x — handles all chart rendering.
+    The date-fns adapter is required for the time-based x-axis.
+    Both are loaded from CDN; an internet connection is needed on first open.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+  <style>
+/* ============================================================
+   CSS VARIABLES — tweak these to retheme the dashboard
+============================================================ */
+:root {
+  --bg:      #f0f4f8;
+  --card:    #ffffff;
+  --border:  #e2e8f0;
+  --text:    #1a202c;
+  --muted:   #718096;
+  --blue:    #3b82f6;
+  --radius:  10px;
+  --shadow:  0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.05);
+  /* chart-specific tokens — read in JS at render time */
+  --chart-grid:       #f0f0f0;
+  --chart-tick:       #718096;
+  --chart-tt-bg:      rgba(255,255,255,.96);
+  --chart-tt-title:   #1a202c;
+  --chart-tt-body:    #4a5568;
+  --chart-tt-border:  #e2e8f0;
+  --chart-legend:     #4a5568;
+  --chart-pm25-fill:  rgba(59,130,246,0.07);
+  --chart-pm10-fill:  rgba(245,158,11,0.07);
+}
+
+/* ---- DARK THEME ---- */
+[data-theme="dark"] {
+  --bg:      #0f1117;
+  --card:    #1a1d27;
+  --border:  #2d3748;
+  --text:    #e2e8f0;
+  --muted:   #a0aec0;
+  --blue:    #60a5fa;
+  --shadow:  0 1px 3px rgba(0,0,0,.4), 0 1px 2px rgba(0,0,0,.3);
+  --chart-grid:       #2d3748;
+  --chart-tick:       #a0aec0;
+  --chart-tt-bg:      rgba(26,29,39,.98);
+  --chart-tt-title:   #e2e8f0;
+  --chart-tt-body:    #a0aec0;
+  --chart-tt-border:  #2d3748;
+  --chart-legend:     #a0aec0;
+  --chart-pm25-fill:  rgba(96,165,250,0.12);
+  --chart-pm10-fill:  rgba(245,158,11,0.12);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: 20px;
+  min-height: 100vh;
+  transition: background 0.2s, color 0.2s;
+}
+
+/* ---- HEADER ---- */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.header h1 { font-size: 1.5rem; font-weight: 700; }
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.last-updated { font-size: 0.8rem; color: var(--muted); }
+
+/* ---- BUTTONS ---- */
+.btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-family: inherit;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.btn:hover  { background: #edf2f7; }
+[data-theme="dark"] .btn:hover { background: #2d3748; }
+.btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+.btn.primary:hover { background: #2563eb; }
+.btn.active  { background: var(--blue); color: #fff; border-color: var(--blue); }
+
+/* ---- STATUS DOT ---- */
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #48bb78;
+  display: inline-block;
+}
+.dot.busy   { background: #f6ad55; animation: blink 1s infinite; }
+.dot.paused { background: #a0aec0; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* Amber-tinted button = auto-refresh is currently OFF */
+.btn.paused            { color: #b7791f; border-color: #f6ad55; background: #fffbeb; }
+.btn.paused:hover      { background: #fef3c7; }
+[data-theme="dark"] .btn.paused       { color: #f6ad55; border-color: #f6ad55; background: #2d1f08; }
+[data-theme="dark"] .btn.paused:hover { background: #3d2a10; }
+
+/* ---- ERROR BANNER ---- */
+.err-banner {
+  background: #fff5f5;
+  border: 1px solid #fed7d7;
+  color: #c53030;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+  display: none;
+}
+[data-theme="dark"] .err-banner { background: #2d1212; border-color: #742a2a; color: #fc8181; }
+
+/* ---- SECTION LABELS ---- */
+.section { margin-bottom: 20px; }
+.sec-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* ---- CURRENT CONDITIONS (six metric cards) ---- */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+.metric-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+}
+.m-name {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.m-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+}
+.m-unit { font-size: 0.72rem; color: var(--muted); margin-top: 3px; }
+
+/* ---- AQI STATUS CARD ---- */
+.aqi-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 24px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+/* left: big number */
+.aqi-main { text-align: center; min-width: 110px; }
+.aqi-num   { font-size: 4rem;  font-weight: 800; line-height: 1; }
+.aqi-lbl   { font-size: 1rem;  font-weight: 600; margin-top: 4px; }
+.aqi-note  { font-size: 0.68rem; color: var(--muted); margin-top: 4px; }
+/* middle: gradient scale bar */
+.aqi-scale { flex: 1; min-width: 180px; }
+.aqi-bar {
+  position: relative;
+  height: 16px;
+  border-radius: 8px;
+  /* gradient spans exactly the AQI 0–500 range */
+  background: linear-gradient(to right,
+    #00e400 0%,     /* Good         0–50   = 0–10% */
+    #ffff00 20%,    /* Moderate    51–100  = 10–20% */
+    #ff7e00 40%,    /* USG        101–150  = 20–30% */
+    #ff0000 60%,    /* Unhealthy  151–200  = 30–40% */
+    #8f3f97 80%,    /* Very Unhl  201–300  = 40–60% */
+    #7e0023 100%    /* Hazardous  301–500  = 60–100% */
+  );
+  margin-bottom: 6px;
+}
+.aqi-needle {
+  position: absolute;
+  top: -5px;
+  width: 6px; height: 26px;
+  background: #1a202c;
+  border-radius: 3px;
+  transform: translateX(-50%);
+  transition: left .5s ease;
+  box-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+.aqi-nums {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+/* right: category legend */
+.aqi-legend { font-size: 0.75rem; }
+.leg-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+.leg-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.leg-range { color: var(--muted); }
+
+/* ---- AIR QUALITY INSIGHT ---- */
+.insight-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted); /* colour updated by JS to match AQI */
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 18px;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text);
+  transition: border-left-color 0.4s;
+}
+
+/* ---- TRENDS SECTION ---- */
+.trends-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.range-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Custom date/time range row — hidden unless "Custom Range" is active */
+.custom-range-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 11px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.custom-range-row label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.custom-range-row input[type="datetime-local"] {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  cursor: pointer;
+}
+.custom-range-row input[type="datetime-local"]:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(59,130,246,.15);
+}
+.custom-err { font-size: 0.78rem; color: #c53030; }
+.charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.chart-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+}
+.chart-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.chart-wrap { position: relative; height: 190px; }
+
+/* ---- PLACEHOLDER (before data loads) ---- */
+.placeholder {
+  text-align: center;
+  padding: 80px 20px;
+  color: var(--muted);
+}
+.placeholder h2 { font-size: 1.1rem; color: var(--text); margin-bottom: 10px; }
+.placeholder p  { font-size: 0.85rem; line-height: 1.8; }
+.placeholder code {
+  background: #edf2f7;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  font-family: monospace;
+}
+[data-theme="dark"] .placeholder code { background: #2d3748; }
+/* Needle colour inverts so it stays visible on the gradient bar */
+[data-theme="dark"] .aqi-needle { background: #e2e8f0; }
+/* datetime-local native picker in dark mode */
+[data-theme="dark"] .custom-range-row input[type="datetime-local"] { color-scheme: dark; }
+
+/* ---- RESPONSIVE ---- */
+/* ---- TEMPERATURE UNIT TOGGLE ---- */
+.unit-toggle { display: flex; }
+.unit-toggle .btn:first-child { border-radius: 6px 0 0 6px; border-right: none; }
+.unit-toggle .btn:last-child  { border-radius: 0 6px 6px 0; }
+
+@media (max-width: 520px) {
+  body { padding: 12px; }
+  .aqi-card { flex-direction: column; align-items: stretch; }
+  .aqi-main { text-align: left; }
+}
+  </style>
+</head>
+<body>
+
+<!-- ============================================================
+     HEADER
+============================================================ -->
+<div class="header">
+  <h1>Air Quality Monitor</h1>
+  <div class="header-right">
+    <span id="dot"    class="dot"          style="display:none"></span>
+    <span id="ts"     class="last-updated"                      ></span>
+    <button id="pauseBtn"  class="btn"     style="display:none" onclick="togglePause()">Pause Auto-Refresh</button>
+    <div class="unit-toggle">
+      <button id="unit-c" class="btn active" onclick="setTempUnit('C')">°C</button>
+      <button id="unit-f" class="btn"        onclick="setTempUnit('F')">°F</button>
+    </div>
+    <button id="themeBtn"  class="btn"     onclick="toggleTheme()">Dark Mode</button>
+    <button                class="btn primary" onclick="loadFile()">Load CSV File</button>
+    <!--
+      Hidden fallback input — used on Firefox/Safari which don't support
+      the File System Access API (showOpenFilePicker).
+    -->
+    <input id="filePicker" type="file" accept=".csv,.txt"
+           style="display:none" onchange="onFilePicked(event)">
+  </div>
+</div>
+
+<!-- Error messages appear here -->
+<div id="errBanner" class="err-banner"></div>
+
+<!-- ============================================================
+     MAIN DASHBOARD  (hidden until data loads)
+============================================================ -->
+<div id="main" style="display:none">
+
+  <!-- CURRENT CONDITIONS -->
+  <div class="section">
+    <div class="sec-label">Current Conditions</div>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="m-name">PM1</div>
+        <div class="m-value" id="v-pm1">—</div>
+        <div class="m-unit">µg/m³</div>
+      </div>
+      <div class="metric-card">
+        <div class="m-name">PM2.5</div>
+        <div class="m-value" id="v-pm25">—</div>
+        <div class="m-unit">µg/m³</div>
+      </div>
+      <div class="metric-card">
+        <div class="m-name">PM10</div>
+        <div class="m-value" id="v-pm10">—</div>
+        <div class="m-unit">µg/m³</div>
+      </div>
+      <div class="metric-card">
+        <div class="m-name">Temperature</div>
+        <div class="m-value" id="v-temp">—</div>
+        <div class="m-unit" id="temp-unit">°C</div>
+      </div>
+      <div class="metric-card">
+        <div class="m-name">Humidity</div>
+        <div class="m-value" id="v-hum">—</div>
+        <div class="m-unit">%</div>
+      </div>
+      <div class="metric-card">
+        <div class="m-name">Pressure</div>
+        <div class="m-value" id="v-pres">—</div>
+        <div class="m-unit">hPa</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AQI STATUS -->
+  <div class="section">
+    <div class="sec-label">AQI Status</div>
+    <div class="aqi-card">
+
+      <!-- Big AQI number + label -->
+      <div class="aqi-main">
+        <div class="aqi-num" id="aqiNum">—</div>
+        <div class="aqi-lbl" id="aqiLbl">—</div>
+        <div class="aqi-note">PM2.5 · EPA breakpoints</div>
+      </div>
+
+      <!-- Gradient bar with position needle -->
+      <div class="aqi-scale">
+        <div class="aqi-bar">
+          <div class="aqi-needle" id="needle" style="left:0%"></div>
+        </div>
+        <div class="aqi-nums">
+          <span>0</span><span>100</span><span>200</span>
+          <span>300</span><span>400</span><span>500</span>
+        </div>
+      </div>
+
+      <!-- Category legend -->
+      <div class="aqi-legend">
+        <div class="leg-item">
+          <div class="leg-dot" style="background:#00e400"></div>
+          <span>Good</span><span class="leg-range">&nbsp;0–50</span>
+        </div>
+        <div class="leg-item">
+          <div class="leg-dot" style="background:#ffff00;outline:1px solid #ddd"></div>
+          <span>Moderate</span><span class="leg-range">&nbsp;51–100</span>
+        </div>
+        <div class="leg-item">
+          <div class="leg-dot" style="background:#ff7e00"></div>
+          <span>Unhealthy (Sensitive)</span><span class="leg-range">&nbsp;101–150</span>
+        </div>
+        <div class="leg-item">
+          <div class="leg-dot" style="background:#ff0000"></div>
+          <span>Unhealthy</span><span class="leg-range">&nbsp;151–200</span>
+        </div>
+        <div class="leg-item">
+          <div class="leg-dot" style="background:#8f3f97"></div>
+          <span>Very Unhealthy</span><span class="leg-range">&nbsp;201–300</span>
+        </div>
+        <div class="leg-item">
+          <div class="leg-dot" style="background:#7e0023"></div>
+          <span>Hazardous</span><span class="leg-range">&nbsp;301–500</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- AIR QUALITY INSIGHT -->
+  <div class="section">
+    <div class="sec-label">Air Quality Insight</div>
+    <div class="insight-card" id="insightCard">
+      <span id="insightText">—</span>
+    </div>
+  </div>
+
+  <!-- TRENDS -->
+  <div class="section">
+    <div class="trends-header">
+      <div class="sec-label" style="margin-bottom:0">Trends</div>
+      <div class="range-btns">
+        <button class="btn"        id="r-1h"     onclick="setRange('1h')">1 Hour</button>
+        <button class="btn active" id="r-24h"    onclick="setRange('24h')">24 Hours</button>
+        <button class="btn"        id="r-all"    onclick="setRange('all')">All Data</button>
+        <button class="btn"        id="r-custom" onclick="setRange('custom')">Custom Range</button>
+      </div>
+    </div>
+
+    <!-- Custom date/time pickers — shown only when Custom Range is active -->
+    <div id="customRangeRow" class="custom-range-row" style="display:none">
+      <label>From <input type="datetime-local" id="customStart"></label>
+      <label>To&nbsp;&nbsp;<input type="datetime-local" id="customEnd"></label>
+      <button class="btn primary" onclick="applyCustomRange()">Apply</button>
+      <span id="customErr" class="custom-err"></span>
+    </div>
+
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-title">PM2.5 Over Time</div>
+        <div class="chart-wrap"><canvas id="cPM25"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">PM10 Over Time</div>
+        <div class="chart-wrap"><canvas id="cPM10"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Temperature &amp; Humidity</div>
+        <div class="chart-wrap"><canvas id="cTH"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /#main -->
+
+<!-- Shown before any file is loaded -->
+<div id="placeholder" class="placeholder">
+  <h2>No data loaded</h2>
+  <p>
+    Click <strong>Load CSV File</strong> to open your readings file.<br>
+    Column names are detected automatically — partial, case-insensitive matching is used.<br>
+    Expected columns: <code>timestamp</code> &nbsp;
+                      <code>pm1</code> &nbsp;
+                      <code>pm2.5</code> &nbsp;
+                      <code>pm10</code> &nbsp;
+                      <code>temperature</code> &nbsp;
+                      <code>humidity</code> &nbsp;
+                      <code>pressure</code><br>
+    Comma, semicolon, and tab delimiters are all supported.<br>
+    Data refreshes automatically every 30 seconds once a file is open.
+  </p>
+</div>
+
+<!-- ============================================================
+     JAVASCRIPT
+============================================================ -->
+<script>
+'use strict';
+
+/* ============================================================
+   CONFIGURATION
+   ─────────────
+   These arrays control how headers in your CSV are matched to
+   the six fields the dashboard understands. Detection is
+   case-insensitive and uses substring matching — so a column
+   called "PM2.5_cf1" will match the 'pm25' aliases list.
+   Longer/more-specific aliases come first so they win.
+============================================================ */
+const COL_ALIASES = {
+  timestamp:   ['timestamp', 'datetime', 'date_time', 'date', 'time'],
+  pm1:         ['pm1.0', 'pm1_0', 'pm_1.0', 'pm_1', 'pm01', 'pm1'],
+  pm25:        ['pm2.5', 'pm2_5', 'pm_2.5', 'pm_25', 'pm025', 'pm25'],
+  pm10:        ['pm10.0','pm10_0','pm_10.0', 'pm_10', 'pm010', 'pm10'],
+  temperature: ['temperature', 'temp'],
+  humidity:    ['humidity', 'humid', 'rh'],
+  pressure:    ['pressure', 'press', 'baro', 'hpa', 'mbar'],
+};
+
+/* ============================================================
+   EPA PM2.5 → AQI BREAKPOINTS
+   ─────────────────────────────
+   Source: EPA AQI Technical Assistance Document, Sept 2018
+   https://www.airnow.gov/sites/default/files/2020-05/aqi-technical-assistance-document-sept2018.pdf
+
+   Format: [BPlo, BPhi, AQIlo, AQIhi, label, color]
+   AQI is calculated via linear interpolation within each band.
+   NOTE: Official AQI uses 24-hr average; here we apply the
+   formula to the most recent instantaneous reading as a proxy.
+============================================================ */
+const AQI_BP = [
+  [  0.0,  12.0,   0,  50, 'Good',                          '#00e400'],
+  [ 12.1,  35.4,  51, 100, 'Moderate',                      '#ffff00'],
+  [ 35.5,  55.4, 101, 150, 'Unhealthy for Sensitive Groups','#ff7e00'],
+  [ 55.5, 150.4, 151, 200, 'Unhealthy',                     '#ff0000'],
+  [150.5, 250.4, 201, 300, 'Very Unhealthy',                '#8f3f97'],
+  [250.5, 500.4, 301, 500, 'Hazardous',                     '#7e0023'],
+];
+
+const REFRESH_MS = 30_000; // How often to re-read the file (ms)
+
+/* ============================================================
+   STATE — all mutable variables in one place
+============================================================ */
+let allRows     = [];      // Parsed rows (sorted ascending by time)
+let colMap      = {};      // { field -> column index } detected from headers
+let activeRange = '24h';  // Which time-range button is active
+let charts      = {};      // Chart.js instances keyed by canvas id
+let fileHandle  = null;    // File System Access API handle (modern browsers)
+let fbFile      = null;    // Fallback File object from <input type=file>
+let refreshTmr  = null;    // setInterval handle for auto-refresh
+let paused      = false;   // true while auto-refresh is suspended
+let useFahrenheit = false; // true when °F display is active
+
+/* ============================================================
+   FILE LOADING
+   ─────────────
+   Strategy:
+   1. Try window.showOpenFilePicker (Chrome / Edge).
+      This returns a FileSystemFileHandle that we can re-read
+      on each refresh tick — no extra user interaction needed.
+   2. Fall back to a hidden <input type="file"> for Firefox /
+      Safari. We can read the file once but can't re-fetch new
+      bytes (browser security). The UI still ticks every 30 s
+      but the data won't update until the user reloads manually.
+============================================================ */
+async function loadFile() {
+  if (window.showOpenFilePicker) {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: 'CSV / Text', accept: { 'text/csv': ['.csv', '.txt'] } }],
+        multiple: false,
+      });
+      fileHandle = handle;
+      fbFile     = null;
+      await readAndRender();
+      startRefresh();
+    } catch (err) {
+      // AbortError means the user cancelled the picker — not a real error
+      if (err.name !== 'AbortError') showErr('Could not open file: ' + err.message);
+    }
+  } else {
+    // Fallback path
+    document.getElementById('filePicker').click();
+  }
+}
+
+/** Called when the user picks a file via the hidden <input> */
+function onFilePicked(evt) {
+  const f = evt.target.files[0];
+  if (!f) return;
+  fbFile     = f;
+  fileHandle = null;
+  readAndRender();
+  startRefresh();
+}
+
+/** Reads the current file and updates the whole UI */
+async function readAndRender() {
+  setDot('busy');
+  try {
+    let text;
+    if (fileHandle) {
+      // Re-fetch the file bytes — picks up any new rows written since last read
+      const file = await fileHandle.getFile();
+      text = await file.text();
+    } else if (fbFile) {
+      text = await fbFile.text();
+    } else {
+      return;
+    }
+    parseAndDisplay(text);
+    setDot('ok');
+    document.getElementById('ts').textContent =
+      'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch (err) {
+    showErr('Read error: ' + err.message);
+    setDot('ok');
+  }
+}
+
+/** Cancels any existing timer and starts a fresh one (no-op when paused) */
+function startRefresh() {
+  if (refreshTmr) clearInterval(refreshTmr);
+  if (paused) return;
+  refreshTmr = setInterval(readAndRender, REFRESH_MS);
+}
+
+/** Toggles auto-refresh on/off without reloading the page */
+function togglePause() {
+  paused = !paused;
+  const btn = document.getElementById('pauseBtn');
+  if (paused) {
+    clearInterval(refreshTmr);
+    refreshTmr = null;
+    btn.textContent = 'Resume Auto-Refresh';
+    btn.classList.add('paused');
+    setDot('paused');
+  } else {
+    btn.textContent = 'Pause Auto-Refresh';
+    btn.classList.remove('paused');
+    setDot('ok');
+    readAndRender();   // fetch immediately on resume, then restart the timer
+    startRefresh();
+  }
+}
+
+/* ============================================================
+   CSV PARSING
+   ──────────
+   Handles:
+   • Windows (CRLF), Unix (LF), and old Mac (CR) line endings
+   • Comma, semicolon, or tab delimiters (auto-detected)
+   • Double-quoted fields that contain commas or newlines
+   • Comment lines beginning with #
+   • Missing values (empty cells → null)
+   • Out-of-order rows (sorted ascending by timestamp)
+============================================================ */
+
+/** Top-level parser: returns an array of structured row objects */
+function parseCSV(text) {
+  // Normalise all line endings to \n
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+  // Skip leading blank lines and comment lines to find the header
+  let hi = 0;
+  while (hi < lines.length && (!lines[hi].trim() || lines[hi].trim().startsWith('#'))) hi++;
+  if (hi >= lines.length) return [];
+
+  // Detect delimiter from the header line
+  const delim = detectDelim(lines[hi]);
+
+  // Parse header and build column→field mapping
+  const headers = splitCSVLine(lines[hi], delim).map(h => h.toLowerCase().trim());
+  colMap = mapColumns(headers);
+
+  const rows = [];
+  for (let i = hi + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue; // skip blank lines
+
+    const fields = splitCSVLine(line, delim);
+
+    // Parse timestamp
+    let ts = null;
+    if (colMap.timestamp !== undefined) {
+      const raw = (fields[colMap.timestamp] || '').trim();
+      const d   = new Date(raw);
+      if (!isNaN(d)) ts = d;
+    }
+
+    // Helper: safely parse a numeric field, returning null if invalid
+    const getNum = key => {
+      if (colMap[key] === undefined) return null;
+      const raw = (fields[colMap[key]] || '').trim();
+      if (!raw) return null;
+      const v = parseFloat(raw);
+      return isNaN(v) ? null : v;
+    };
+
+    rows.push({
+      _time: ts,
+      _pm1:  getNum('pm1'),
+      _pm25: getNum('pm25'),
+      _pm10: getNum('pm10'),
+      _temp: getNum('temperature'),
+      _hum:  getNum('humidity'),
+      _pres: getNum('pressure'),
+    });
+  }
+
+  // Sort by timestamp ascending; rows without timestamps go to the end
+  rows.sort((a, b) => {
+    if (!a._time && !b._time) return 0;
+    if (!a._time) return  1;
+    if (!b._time) return -1;
+    return a._time - b._time;
+  });
+
+  return rows;
+}
+
+/**
+ * Detects the most likely delimiter by counting occurrences
+ * in a single line (the header).
+ */
+function detectDelim(line) {
+  const counts = {
+    ',':  (line.match(/,/g)  || []).length,
+    ';':  (line.match(/;/g)  || []).length,
+    '\t': (line.match(/\t/g) || []).length,
+  };
+  return Object.keys(counts).reduce((a, b) => counts[a] >= counts[b] ? a : b);
+}
+
+/**
+ * Splits one CSV line on the given delimiter,
+ * correctly handling double-quoted fields.
+ */
+function splitCSVLine(line, delim) {
+  const fields = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      // Two consecutive quotes inside a quoted field = literal quote char
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === delim && !inQ) {
+      fields.push(cur.trim()); cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  fields.push(cur.trim());
+  return fields;
+}
+
+/**
+ * Maps the six semantic field names to actual column indices.
+ * Uses the COL_ALIASES config — first match wins.
+ */
+function mapColumns(headers) {
+  const map = {};
+  for (const [field, aliases] of Object.entries(COL_ALIASES)) {
+    for (const alias of aliases) {
+      const idx = headers.findIndex(h => h.includes(alias.toLowerCase()));
+      if (idx !== -1 && !(field in map)) { map[field] = idx; break; }
+    }
+  }
+  return map;
+}
+
+/* ============================================================
+   RENDERING
+============================================================ */
+
+/**
+ * Entry point after reading the file: parse → validate → update all UI.
+ * Any errors are shown in the banner and the dashboard stays hidden.
+ */
+function parseAndDisplay(text) {
+  clearErr();
+  try {
+    allRows = parseCSV(text);
+  } catch (err) {
+    showErr('Parse error: ' + err.message);
+    return;
+  }
+
+  if (allRows.length === 0) {
+    showErr('No valid rows found. Check the file has a header row followed by data rows.');
+    return;
+  }
+
+  // Reveal the dashboard and hide the placeholder
+  document.getElementById('main').style.display        = '';
+  document.getElementById('placeholder').style.display = 'none';
+  document.getElementById('dot').style.display         = '';
+  document.getElementById('pauseBtn').style.display    = '';
+
+  renderCurrent();
+  renderAQI();
+  renderInsight();
+  renderCharts();
+}
+
+/**
+ * Updates the six "Current Conditions" metric cards.
+ * Uses the most recent row that has at least one valid reading.
+ */
+function renderCurrent() {
+  const last = [...allRows].reverse().find(r =>
+    r._pm25 !== null || r._pm10 !== null || r._temp !== null
+  );
+  if (!last) return;
+
+  const set = (id, val, dp) =>
+    (document.getElementById(id).textContent = val !== null ? val.toFixed(dp) : '—');
+
+  set('v-pm1',  last._pm1,  1);
+  set('v-pm25', last._pm25, 1);
+  set('v-pm10', last._pm10, 1);
+  const displayTemp = last._temp !== null
+    ? (useFahrenheit ? last._temp * 9 / 5 + 32 : last._temp)
+    : null;
+  set('v-temp', displayTemp, 1);
+  set('v-hum',  last._hum,  0);
+  set('v-pres', last._pres, 1);
+}
+
+/**
+ * Calculates the AQI from the latest PM2.5 reading and
+ * updates the big number, colour label, and needle position.
+ */
+function renderAQI() {
+  const last = [...allRows].reverse().find(r => r._pm25 !== null);
+
+  const numEl   = document.getElementById('aqiNum');
+  const lblEl   = document.getElementById('aqiLbl');
+  const needle  = document.getElementById('needle');
+
+  if (!last) {
+    numEl.textContent = '—';
+    lblEl.textContent = 'No PM2.5 data';
+    numEl.style.color = '';
+    lblEl.style.color = '';
+    return;
+  }
+
+  const { aqi, label, color } = calcAQI(last._pm25);
+
+  numEl.textContent = aqi;
+  numEl.style.color = color;
+  lblEl.textContent = label;
+  lblEl.style.color = color;
+
+  // Position the needle on the 0–500 scale bar (clamp to stay inside the bar)
+  needle.style.left = Math.min(aqi / 500 * 100, 99) + '%';
+}
+
+/**
+ * Calculates AQI from a PM2.5 concentration value.
+ *
+ * Method: EPA linear interpolation between breakpoints.
+ *   AQI = ((AQIhi - AQIlo) / (BPhi - BPlo)) × (Cp - BPlo) + AQIlo
+ *
+ * Per EPA guidance, Cp is truncated to one decimal place before lookup.
+ *
+ * @param {number} pm25 - Concentration in µg/m³
+ * @returns {{ aqi: number, label: string, color: string }}
+ */
+function calcAQI(pm25) {
+  // Truncate to 1 decimal (not round) — EPA rule
+  const cp = Math.floor(Math.min(pm25, 500.4) * 10) / 10;
+
+  for (const [BPlo, BPhi, AQIlo, AQIhi, label, color] of AQI_BP) {
+    if (cp >= BPlo && cp <= BPhi) {
+      const aqi = Math.round(((AQIhi - AQIlo) / (BPhi - BPlo)) * (cp - BPlo) + AQIlo);
+      return { aqi, label, color };
+    }
+  }
+  // Above the highest breakpoint — off the scale
+  return { aqi: 500, label: 'Hazardous', color: '#7e0023' };
+}
+
+/* ============================================================
+   AIR QUALITY INSIGHT
+   ─────────────────────
+   Generates 1–2 sentences describing the current AQI category,
+   the PM2.5 trend over the past hour, and any recent spikes.
+============================================================ */
+
+/**
+ * Builds and displays the insight sentence.
+ * Called every time the data is refreshed.
+ */
+function renderInsight() {
+  const textEl = document.getElementById('insightText');
+  const cardEl = document.getElementById('insightCard');
+
+  // Collect only rows that have a PM2.5 reading
+  const rows = allRows.filter(r => r._pm25 !== null);
+  if (rows.length < 3) {
+    textEl.textContent = 'Not enough data to generate an insight yet.';
+    cardEl.style.borderLeftColor = 'var(--muted)';
+    return;
+  }
+
+  // Current AQI based on the most recent reading
+  const latest = rows[rows.length - 1];
+  const { label: aqiLabel, color: aqiColor } = calcAQI(latest._pm25);
+
+  // Trend and spike analysis
+  const trend        = detectTrend(rows);
+  const spikeDetected = detectSpike(rows);
+
+  // --- Build the sentence ---
+  // Part 1: AQI category
+  let sentence = `Air quality is <strong style="color:${aqiColor}">${aqiLabel}</strong>`;
+
+  // Part 2: trend qualifier
+  if (trend === 'worsening' || trend === 'improving') {
+    sentence += ` and <strong>${trend}</strong> over the past hour`;
+  } else {
+    sentence += ' and holding <strong>stable</strong>';
+  }
+
+  // Part 3: spike note — appended inline when there's also a trend, new sentence otherwise
+  if (spikeDetected && trend !== 'stable') {
+    sentence += ', with a notable PM2.5 spike.';
+  } else if (spikeDetected) {
+    sentence += '. A notable PM2.5 spike was detected in recent readings.';
+  } else {
+    sentence += '.';
+  }
+
+  textEl.innerHTML = sentence;
+  // Colour the left border to match the AQI category
+  cardEl.style.borderLeftColor = aqiColor;
+}
+
+/**
+ * Compares average PM2.5 in the last hour against the hour before.
+ * Falls back to a positional third-split when timestamps are unavailable
+ * or the dataset is too sparse.
+ *
+ * @param {Object[]} rows - PM2.5-valid rows, sorted ascending by time
+ * @returns {'worsening'|'improving'|'stable'}
+ */
+function detectTrend(rows) {
+  const latestTime = rows[rows.length - 1]._time;
+
+  if (latestTime) {
+    const oneHourAgo  = new Date(latestTime - 3_600_000);
+    const twoHoursAgo = new Date(latestTime - 7_200_000);
+
+    const recent  = rows.filter(r => r._time && r._time >= oneHourAgo);
+    const earlier = rows.filter(r => r._time && r._time >= twoHoursAgo && r._time < oneHourAgo);
+
+    if (recent.length >= 2 && earlier.length >= 2) {
+      return classifyTrend(mean(recent), mean(earlier));
+    }
+  }
+
+  // Fallback: compare the last third of readings against the third before it
+  const third   = Math.max(1, Math.floor(rows.length / 3));
+  const recent  = rows.slice(-third);
+  const earlier = rows.slice(-third * 2, -third);
+  if (!earlier.length) return 'stable';
+  return classifyTrend(mean(recent), mean(earlier));
+}
+
+/**
+ * Classifies trend direction from two average PM2.5 values.
+ * A ±10% change threshold avoids flagging noise as a trend.
+ */
+function classifyTrend(recentAvg, earlierAvg) {
+  if (earlierAvg === 0) return 'stable';
+  const pct = (recentAvg - earlierAvg) / earlierAvg;
+  if (pct >  0.10) return 'worsening';
+  if (pct < -0.10) return 'improving';
+  return 'stable';
+}
+
+/**
+ * Detects a spike: either a single step-jump ≥50% and ≥10 µg/m³,
+ * or the latest reading being ≥2× the recent baseline and ≥15 µg/m³ above it.
+ *
+ * @param {Object[]} rows - PM2.5-valid rows, sorted ascending by time
+ * @returns {boolean}
+ */
+function detectSpike(rows) {
+  // Check recent step-to-step changes (last 12 readings)
+  const tail = rows.slice(-Math.min(12, rows.length));
+  for (let i = 1; i < tail.length; i++) {
+    const prev = tail[i - 1]._pm25;
+    const curr = tail[i]._pm25;
+    if (prev > 0 && curr > prev * 1.5 && curr - prev > 10) return true;
+  }
+
+  // Check whether the latest reading is an outlier vs the preceding baseline
+  const baseline = rows.slice(-Math.min(rows.length, 25), -1);
+  if (baseline.length < 3) return false;
+  const baselineMean = mean(baseline);
+  const latestPM25   = rows[rows.length - 1]._pm25;
+  if (latestPM25 > baselineMean * 2 && latestPM25 - baselineMean > 15) return true;
+
+  return false;
+}
+
+/** Returns the arithmetic mean of PM2.5 values in a row array */
+function mean(rows) {
+  return rows.reduce((s, r) => s + r._pm25, 0) / rows.length;
+}
+
+/* ============================================================
+   TIME RANGE FILTERING
+============================================================ */
+
+/**
+ * Returns the subset of allRows that fall within the selected range.
+ * Uses the latest timestamp in the *data* (not the system clock) as
+ * the "now" anchor, so static files show meaningful ranges.
+ */
+function filteredRows(range) {
+  if (range === 'all') return allRows;
+
+  // Custom range: filter between the two datetime-local input values
+  if (range === 'custom') {
+    const startVal = document.getElementById('customStart').value;
+    const endVal   = document.getElementById('customEnd').value;
+    if (!startVal || !endVal) return allRows;
+    const start = new Date(startVal);
+    const end   = new Date(endVal);
+    if (isNaN(start) || isNaN(end) || start >= end) return allRows;
+    return allRows.filter(r => r._time && r._time >= start && r._time <= end);
+  }
+
+  const timed = allRows.filter(r => r._time);
+  if (!timed.length) return allRows; // no timestamps → return everything
+
+  const latest  = timed[timed.length - 1]._time;
+  const hours   = range === '1h' ? 1 : 24;
+  const cutoff  = new Date(latest.getTime() - hours * 3_600_000);
+
+  return timed.filter(r => r._time >= cutoff);
+}
+
+/** Switches the active time range and re-renders charts */
+function setRange(range) {
+  activeRange = range;
+  ['1h', '24h', 'all', 'custom'].forEach(r =>
+    document.getElementById('r-' + r).classList.toggle('active', r === range)
+  );
+
+  const customRow = document.getElementById('customRangeRow');
+  if (range === 'custom') {
+    customRow.style.display = '';
+    // Pre-populate inputs with the full extent of the loaded dataset
+    const timed = allRows.filter(r => r._time);
+    if (timed.length) {
+      document.getElementById('customStart').value = toDateTimeInput(timed[0]._time);
+      document.getElementById('customEnd').value   = toDateTimeInput(timed[timed.length - 1]._time);
+    }
+    applyCustomRange(); // render immediately with pre-populated values
+  } else {
+    customRow.style.display = 'none';
+    document.getElementById('customErr').textContent = '';
+    renderCharts();
+  }
+}
+
+/**
+ * Formats a Date as "YYYY-MM-DDTHH:MM" for use in a datetime-local input.
+ * Uses local time (not UTC) so the picker matches what the user sees.
+ */
+function toDateTimeInput(date) {
+  const p = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${p(date.getMonth()+1)}-${p(date.getDate())}T${p(date.getHours())}:${p(date.getMinutes())}`;
+}
+
+/**
+ * Validates the custom start/end inputs and re-renders charts.
+ * Called by the Apply button and automatically when Custom Range is selected.
+ */
+function applyCustomRange() {
+  const errEl    = document.getElementById('customErr');
+  const startVal = document.getElementById('customStart').value;
+  const endVal   = document.getElementById('customEnd').value;
+
+  errEl.textContent = '';
+
+  if (!startVal) { errEl.textContent = 'Enter a start date/time.'; return; }
+  if (!endVal)   { errEl.textContent = 'Enter an end date/time.';  return; }
+
+  const start = new Date(startVal);
+  const end   = new Date(endVal);
+
+  if (isNaN(start)) { errEl.textContent = 'Start date/time is invalid.'; return; }
+  if (isNaN(end))   { errEl.textContent = 'End date/time is invalid.';   return; }
+  if (start >= end) { errEl.textContent = 'Start must be before end.';   return; }
+
+  const rows = filteredRows('custom');
+  if (!rows.length) { errEl.textContent = 'No data found in selected range.'; return; }
+
+  renderCharts();
+}
+
+/* ============================================================
+   CHARTS
+   ───────
+   Three Chart.js line charts:
+   1. PM2.5 over time   (blue)
+   2. PM10 over time    (amber)
+   3. Temp + humidity   (red + blue, dual y-axes)
+============================================================ */
+
+/**
+ * Destroys the previous chart instance on a canvas (prevents
+ * "Canvas is already in use" errors on re-render) then creates
+ * a new chart with the provided config.
+ */
+function makeChart(id, config) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id).getContext('2d'), config);
+}
+
+/** Returns the common x-axis (time) options, reading colours from the active theme */
+function xAxis() {
+  const tick = cssVar('--chart-tick');
+  return {
+    type: 'time',
+    time: {
+      tooltipFormat: 'MMM d, HH:mm',
+      displayFormats: {
+        minute: 'HH:mm',
+        hour:   'HH:mm',
+        day:    'MMM d',
+      },
+    },
+    grid:  { color: cssVar('--chart-grid') },
+    ticks: { color: tick, maxTicksLimit: 7, font: { size: 11 } },
+  };
+}
+
+function yAxis(title = '', extra = {}) {
+  const tick = cssVar('--chart-tick');
+  return {
+    beginAtZero: true,
+    grid:  { color: cssVar('--chart-grid') },
+    ticks: { color: tick, font: { size: 11 } },
+    title: title ? { display: true, text: title, color: tick, font: { size: 10 } } : { display: false },
+    ...extra,
+  };
+}
+
+/** Reads a CSS custom property from :root (or [data-theme="dark"] override) */
+const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/** Returns tooltip styling for the current theme */
+function getTooltip() {
+  return {
+    backgroundColor: cssVar('--chart-tt-bg'),
+    titleColor:      cssVar('--chart-tt-title'),
+    bodyColor:       cssVar('--chart-tt-body'),
+    borderColor:     cssVar('--chart-tt-border'),
+    borderWidth: 1,
+    padding: 10,
+  };
+}
+
+/**
+ * Builds a dataset config for a line chart.
+ * Points are hidden when there are more than 150 readings to
+ * keep the chart clean on dense datasets.
+ */
+function lineDs(data, borderColor, bgColor, label = '', yAxisID = undefined) {
+  const cfg = {
+    label,
+    data,
+    borderColor,
+    backgroundColor: bgColor,
+    fill:        !!bgColor && bgColor !== 'transparent',
+    tension:     0.3,
+    borderWidth: 2,
+    pointRadius: data.length > 150 ? 0 : 2, // dots only on sparse data
+    spanGaps:    false, // leave gaps where values are null/missing
+  };
+  if (yAxisID) cfg.yAxisID = yAxisID;
+  return cfg;
+}
+
+/** Re-renders all three charts using the currently selected time range */
+function renderCharts() {
+  const rows = filteredRows(activeRange);
+
+  // Build { x: Date, y: number } point arrays; only include rows where
+  // both a timestamp and a valid numeric value exist.
+  const pts = field => rows
+    .filter(r => r._time && r[field] !== null)
+    .map(r => ({ x: r._time, y: r[field] }));
+
+  const pm25pts = pts('_pm25');
+  const pm10pts = pts('_pm10');
+  // Convert temperature values to the active unit before charting
+  const tempUnit = useFahrenheit ? '°F' : '°C';
+  const temppts  = rows
+    .filter(r => r._time && r._temp !== null)
+    .map(r => ({ x: r._time, y: useFahrenheit ? r._temp * 9 / 5 + 32 : r._temp }));
+  const humpts  = pts('_hum');
+
+  /* --- PM2.5 chart --- */
+  makeChart('cPM25', {
+    type: 'line',
+    data: { datasets: [lineDs(pm25pts, '#3b82f6', cssVar('--chart-pm25-fill'))] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: getTooltip() },
+      scales: { x: xAxis(), y: yAxis('µg/m³') },
+    },
+  });
+
+  /* --- PM10 chart --- */
+  makeChart('cPM10', {
+    type: 'line',
+    data: { datasets: [lineDs(pm10pts, '#f59e0b', cssVar('--chart-pm10-fill'))] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: getTooltip() },
+      scales: { x: xAxis(), y: yAxis('µg/m³') },
+    },
+  });
+
+  /* --- Temperature & Humidity (dual y-axis) ---
+     Temperature uses the left axis (yT), humidity the right (yH).
+     The two axes share the same x-axis but have independent scales.   */
+  makeChart('cTH', {
+    type: 'line',
+    data: {
+      datasets: [
+        lineDs(temppts, '#e53e3e', 'transparent', `Temp (${tempUnit})`, 'yT'),
+        lineDs(humpts,  '#3182ce', 'transparent', 'Humidity (%)', 'yH'),
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: cssVar('--chart-legend'), font: { size: 11 }, boxWidth: 10, padding: 14 },
+        },
+        tooltip: getTooltip(),
+      },
+      scales: {
+        x:  xAxis(),
+        yT: yAxis(tempUnit, {
+              position: 'left',
+              beginAtZero: false,
+              ticks: { color: '#e53e3e', font: { size: 11 } },
+              title: { display: true, text: tempUnit, color: '#e53e3e', font: { size: 10 } },
+            }),
+        yH: {
+          type: 'linear',
+          position: 'right',
+          min: 0, max: 100,
+          grid:  { drawOnChartArea: false }, // don't draw grid lines for the secondary axis
+          ticks: { color: '#3182ce', font: { size: 11 } },
+          title: { display: true, text: '%', color: '#3182ce', font: { size: 10 } },
+        },
+      },
+    },
+  });
+}
+
+/* ============================================================
+   UI UTILITIES
+============================================================ */
+function showErr(msg) {
+  const el = document.getElementById('errBanner');
+  el.textContent = msg;
+  el.style.display = '';
+}
+function clearErr() {
+  document.getElementById('errBanner').style.display = 'none';
+}
+function setDot(state) {
+  document.getElementById('dot').className =
+    'dot' + (state === 'busy' ? ' busy' : state === 'paused' ? ' paused' : '');
+}
+
+/* ============================================================
+   THEME
+============================================================ */
+
+/** Applies a theme, updates the button label, persists to localStorage,
+    and re-renders charts so they pick up the new colour tokens. */
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  document.getElementById('themeBtn').textContent =
+    theme === 'dark' ? 'Light Mode' : 'Dark Mode';
+  localStorage.setItem('aq-theme', theme);
+  if (allRows.length) renderCharts(); // re-render to apply new chart colours
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'light';
+  setTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+/* ============================================================
+   TEMPERATURE UNIT
+============================================================ */
+
+/**
+ * Switches temperature display between Celsius and Fahrenheit.
+ * Updates the metric card unit label, the toggle button active state,
+ * and re-renders current conditions and charts.
+ * Original data in allRows is never modified — only the UI converts.
+ *
+ * @param {'C'|'F'} unit
+ */
+function setTempUnit(unit) {
+  useFahrenheit = unit === 'F';
+  document.getElementById('unit-c').classList.toggle('active', !useFahrenheit);
+  document.getElementById('unit-f').classList.toggle('active',  useFahrenheit);
+  document.getElementById('temp-unit').textContent = useFahrenheit ? '°F' : '°C';
+  localStorage.setItem('aq-temp-unit', unit);
+  if (allRows.length) {
+    renderCurrent();
+    renderCharts();
+  }
+}
+
+// Apply saved theme on load (before first paint to avoid flash)
+setTheme(localStorage.getItem('aq-theme') || 'light');
+// Apply saved temperature unit on load
+setTempUnit(localStorage.getItem('aq-temp-unit') || 'C');
+</script>
+</body>
+</html>

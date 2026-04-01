@@ -1,0 +1,43 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Environment / secrets
+.env
+.env.*
+*.env
+
+# Distribution / build
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Data files ────────────────────────────────────────────────
+# Live sensor readings — potentially large and frequently updated.
+# Keep sample_readings.csv tracked; ignore real data files.
+readings_*.csv
+data/
+*.db
+*.sqlite
+
+# ── OS / editor ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
