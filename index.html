@@ -344,6 +344,32 @@ body {
 /* datetime-local native picker in dark mode */
 [data-theme="dark"] .custom-range-row input[type="datetime-local"] { color-scheme: dark; }
 
+/* ---- COMPARISON MODE ---- */
+.compare-sep { width:1px; height:20px; background:var(--border); align-self:center; }
+
+.comp-summary {
+  margin-top:14px; background:var(--card); border:1px solid var(--border);
+  border-radius:var(--radius); box-shadow:var(--shadow); padding:16px 18px;
+}
+.comp-summary-title {
+  font-size:0.68rem; font-weight:700; text-transform:uppercase;
+  letter-spacing:.09em; color:var(--muted); margin-bottom:12px;
+}
+.comp-table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+.comp-table th,
+.comp-table td { padding:6px 10px; text-align:right; border-bottom:1px solid var(--border); }
+.comp-table tr:last-child td { border-bottom:none; }
+.comp-table th:first-child,
+.comp-table td:first-child { text-align:left; }
+.comp-table th {
+  font-weight:600; font-size:0.72rem; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.05em; padding-bottom:8px;
+}
+.comp-better  { color:#10b981; }
+.comp-worse   { color:#ef4444; }
+.comp-neutral { color:var(--muted); }
+[data-theme="dark"] #compRangeRow input[type="datetime-local"] { color-scheme:dark; }
+
 /* ---- RESPONSIVE ---- */
 /* ---- TEMPERATURE UNIT TOGGLE ---- */
 .unit-toggle { display: flex; }
@@ -499,6 +525,8 @@ body {
         <button class="btn active" id="r-24h"    onclick="setRange('24h')">24 Hours</button>
         <button class="btn"        id="r-all"    onclick="setRange('all')">All Data</button>
         <button class="btn"        id="r-custom" onclick="setRange('custom')">Custom Range</button>
+        <span class="compare-sep"></span>
+        <button class="btn" id="btn-compare" onclick="toggleComparison()">&#x21C4; Compare</button>
       </div>
     </div>
 
@@ -508,6 +536,15 @@ body {
       <label>To&nbsp;&nbsp;<input type="datetime-local" id="customEnd"></label>
       <button class="btn primary" onclick="applyCustomRange()">Apply</button>
       <span id="customErr" class="custom-err"></span>
+    </div>
+
+    <!-- Comparison date range pickers — shown only when Compare mode is active -->
+    <div id="compRangeRow" class="custom-range-row" style="display:none">
+      <span style="font-size:0.78rem;color:var(--muted);white-space:nowrap">Compare to:</span>
+      <label>From <input type="datetime-local" id="compFrom"></label>
+      <label>To&nbsp;&nbsp;<input type="datetime-local" id="compTo"></label>
+      <button class="btn primary" onclick="applyComparisonRange()">Apply</button>
+      <span id="compErr" class="custom-err"></span>
     </div>
 
     <div class="charts-grid">
@@ -523,6 +560,35 @@ body {
         <div class="chart-title">Temperature &amp; Humidity</div>
         <div class="chart-wrap"><canvas id="cTH"></canvas></div>
       </div>
+    </div>
+
+    <!-- Comparison summary — shown only when Compare mode is active with valid ranges -->
+    <div id="compSummary" class="comp-summary" style="display:none">
+      <div class="comp-summary-title">Comparison Summary &mdash; PM2.5</div>
+      <table class="comp-table">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th id="csh-p">Primary</th>
+            <th id="csh-s">Comparison</th>
+            <th>Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Avg PM2.5</td>
+            <td id="cs-avg-p">&mdash;</td>
+            <td id="cs-avg-s">&mdash;</td>
+            <td id="cs-avg-d" class="comp-neutral">&mdash;</td>
+          </tr>
+          <tr>
+            <td>Max PM2.5</td>
+            <td id="cs-max-p">&mdash;</td>
+            <td id="cs-max-s">&mdash;</td>
+            <td id="cs-max-d" class="comp-neutral">&mdash;</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -604,6 +670,9 @@ let fileHandle  = null;    // File System Access API handle (modern browsers)
 let fbFile      = null;    // Fallback File object from <input type=file>
 let refreshTmr  = null;    // setInterval handle for auto-refresh
 let paused      = false;   // true while auto-refresh is suspended
+let comparisonMode = false; // true when Compare mode is active
+let compStart      = null;  // Date — secondary range start
+let compEnd        = null;  // Date — secondary range end
 let useFahrenheit = false; // true when °F display is active
 
 /* ============================================================
@@ -1162,6 +1231,135 @@ function applyCustomRange() {
 }
 
 /* ============================================================
+   COMPARISON MODE
+============================================================ */
+
+function toggleComparison() {
+  comparisonMode = !comparisonMode;
+  document.getElementById('btn-compare').classList.toggle('active', comparisonMode);
+  const compRow = document.getElementById('compRangeRow');
+  if (comparisonMode) {
+    compRow.style.display = '';
+    // Pre-suggest the same duration as the primary range, immediately before it
+    if (!compStart) {
+      const primary = filteredRows(activeRange).filter(r => r._time);
+      if (primary.length >= 2) {
+        const dur      = primary[primary.length - 1]._time - primary[0]._time;
+        const sugEnd   = new Date(primary[0]._time - 60_000); // 1-min gap before primary
+        const sugStart = new Date(sugEnd - dur);
+        const timed    = allRows.filter(r => r._time);
+        if (timed.length && sugStart >= timed[0]._time) {
+          document.getElementById('compFrom').value = toDateTimeInput(sugStart);
+          document.getElementById('compTo').value   = toDateTimeInput(sugEnd);
+          compStart = sugStart;
+          compEnd   = sugEnd;
+        }
+      }
+    }
+  } else {
+    compRow.style.display = 'none';
+    document.getElementById('compSummary').style.display = 'none';
+    document.getElementById('compErr').textContent = '';
+    compStart = null;
+    compEnd   = null;
+  }
+  renderCharts();
+}
+
+function applyComparisonRange() {
+  const errEl    = document.getElementById('compErr');
+  const startVal = document.getElementById('compFrom').value;
+  const endVal   = document.getElementById('compTo').value;
+  errEl.textContent = '';
+  if (!startVal) { errEl.textContent = 'Enter a start date/time.'; return; }
+  if (!endVal)   { errEl.textContent = 'Enter an end date/time.';  return; }
+  const s = new Date(startVal), e = new Date(endVal);
+  if (isNaN(s))  { errEl.textContent = 'Start date/time is invalid.'; return; }
+  if (isNaN(e))  { errEl.textContent = 'End date/time is invalid.';   return; }
+  if (s >= e)    { errEl.textContent = 'Start must be before end.';   return; }
+  const rows = allRows.filter(r => r._time && r._time >= s && r._time <= e);
+  if (!rows.length) { errEl.textContent = 'No data found in that range.'; return; }
+  compStart = s;
+  compEnd   = e;
+  renderCharts();
+}
+
+/** Returns the secondary (comparison) rows, or null if unavailable */
+function getCompRows() {
+  if (!compStart || !compEnd) return null;
+  const rows = allRows.filter(r => r._time && r._time >= compStart && r._time <= compEnd);
+  return rows.length ? rows : null;
+}
+
+/** Formats a date range as a compact human label */
+function fmtDateRange(start, end) {
+  if (!start || !end) return 'Comparison';
+  const fmt = d => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return `${fmt(start)} \u2013 ${fmt(end)}`;
+}
+
+/** Returns a short label for the currently active primary range */
+function primaryRangeLabel() {
+  if (activeRange === '1h')  return 'Last 1 Hour';
+  if (activeRange === '24h') return 'Last 24 Hours';
+  if (activeRange === 'all') return 'All Data';
+  const s = document.getElementById('customStart').value;
+  const e = document.getElementById('customEnd').value;
+  if (s && e) {
+    const fmt = d => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return `${fmt(new Date(s))} \u2013 ${fmt(new Date(e))}`;
+  }
+  return 'Primary';
+}
+
+/** Returns { avg, max } PM2.5 stats for a row set, or null if no data */
+function calcPm25Stats(rows) {
+  const vals = rows.filter(r => r._pm25 !== null).map(r => r._pm25);
+  if (!vals.length) return null;
+  return {
+    avg: vals.reduce((s, v) => s + v, 0) / vals.length,
+    max: Math.max(...vals),
+  };
+}
+
+/** Renders (or hides) the comparison summary card below the charts */
+function renderComparisonSummary(primaryRows, compRows) {
+  const el = document.getElementById('compSummary');
+  if (!comparisonMode || !compRows) { el.style.display = 'none'; return; }
+
+  const fmtVal  = v => v !== null ? v.toFixed(1) + ' \u00b5g/m\u00b3' : '\u2014';
+  const fmtDiff = (p, c) => {
+    if (p === null || c === null || p === 0) return { text: '\u2014', cls: 'comp-neutral' };
+    const pct  = ((c - p) / p) * 100;
+    const sign = pct >= 0 ? '+' : '';
+    const cls  = Math.abs(pct) < 2 ? 'comp-neutral' : pct > 0 ? 'comp-worse' : 'comp-better';
+    return { text: `${sign}${pct.toFixed(1)}%`, cls };
+  };
+
+  const ps = calcPm25Stats(primaryRows);
+  const cs = calcPm25Stats(compRows);
+
+  document.getElementById('csh-p').textContent = primaryRangeLabel();
+  document.getElementById('csh-s').textContent = fmtDateRange(compStart, compEnd);
+
+  document.getElementById('cs-avg-p').textContent = fmtVal(ps ? ps.avg : null);
+  document.getElementById('cs-avg-s').textContent = fmtVal(cs ? cs.avg : null);
+  const avgD = fmtDiff(ps ? ps.avg : null, cs ? cs.avg : null);
+  const avgEl = document.getElementById('cs-avg-d');
+  avgEl.textContent = avgD.text;
+  avgEl.className   = avgD.cls;
+
+  document.getElementById('cs-max-p').textContent = fmtVal(ps ? ps.max : null);
+  document.getElementById('cs-max-s').textContent = fmtVal(cs ? cs.max : null);
+  const maxD = fmtDiff(ps ? ps.max : null, cs ? cs.max : null);
+  const maxEl = document.getElementById('cs-max-d');
+  maxEl.textContent = maxD.text;
+  maxEl.className   = maxD.cls;
+
+  el.style.display = '';
+}
+
+/* ============================================================
    CHARTS
    ───────
    Three Chart.js line charts:
@@ -1195,6 +1393,22 @@ function xAxis() {
     },
     grid:  { color: cssVar('--chart-grid') },
     ticks: { color: tick, maxTicksLimit: 7, font: { size: 11 } },
+  };
+}
+
+/** Returns a linear hours-offset x-axis used when comparison mode is active */
+function xAxisComparison() {
+  const tick = cssVar('--chart-tick');
+  return {
+    type: 'linear',
+    grid:  { color: cssVar('--chart-grid') },
+    ticks: {
+      color: tick,
+      maxTicksLimit: 7,
+      font: { size: 11 },
+      callback: v => Number.isInteger(v) ? v + ' h' : v.toFixed(1) + ' h',
+    },
+    title: { display: true, text: 'Hours from range start', color: tick, font: { size: 10 } },
   };
 }
 
@@ -1245,72 +1459,121 @@ function lineDs(data, borderColor, bgColor, label = '', yAxisID = undefined) {
   return cfg;
 }
 
+/** Builds a dashed dataset config for the comparison (secondary) series */
+function compDs(data, borderColor, label, yAxisID = undefined) {
+  return { ...lineDs(data, borderColor, 'transparent', label, yAxisID), borderDash: [5, 4], borderWidth: 1.5 };
+}
+
 /** Re-renders all three charts using the currently selected time range */
 function renderCharts() {
-  const rows = filteredRows(activeRange);
+  const rows     = filteredRows(activeRange);
+  const compRows = comparisonMode ? getCompRows() : null;
+  const inComp   = comparisonMode && compRows !== null;
 
-  // Build { x: Date, y: number } point arrays; only include rows where
-  // both a timestamp and a valid numeric value exist.
-  const pts = field => rows
+  // In comparison mode, x values are hours-offset from range start so both
+  // series align at 0 regardless of their absolute timestamps.
+  const primaryStart = inComp
+    ? (rows.find(r => r._time) || {})._time || new Date(0)
+    : null;
+
+  const makePts = (rowSet, field, startTime) => rowSet
     .filter(r => r._time && r[field] !== null)
-    .map(r => ({ x: r._time, y: r[field] }));
+    .map(r => inComp
+      ? { x: (r._time - startTime) / 3_600_000, y: r[field] }
+      : { x: r._time, y: r[field] });
 
-  const pm25pts = pts('_pm25');
-  const pm10pts = pts('_pm10');
-  // Convert temperature values to the active unit before charting
-  const tempUnit = useFahrenheit ? '°F' : '°C';
-  const temppts  = rows
+  const tempUnit = useFahrenheit ? '\u00b0F' : '\u00b0C';
+  const makeTempPts = (rowSet, startTime) => rowSet
     .filter(r => r._time && r._temp !== null)
-    .map(r => ({ x: r._time, y: useFahrenheit ? r._temp * 9 / 5 + 32 : r._temp }));
-  const humpts  = pts('_hum');
+    .map(r => ({
+      x: inComp ? (r._time - startTime) / 3_600_000 : r._time,
+      y: useFahrenheit ? r._temp * 9 / 5 + 32 : r._temp,
+    }));
+
+  // Primary datasets
+  const pm25pts = makePts(rows, '_pm25', primaryStart);
+  const pm10pts = makePts(rows, '_pm10', primaryStart);
+  const temppts = makeTempPts(rows, primaryStart);
+  const humpts  = makePts(rows, '_hum',  primaryStart);
+
+  // Comparison datasets (hours offset from their own range start)
+  const cPm25pts = inComp ? makePts(compRows, '_pm25', compStart) : [];
+  const cPm10pts = inComp ? makePts(compRows, '_pm10', compStart) : [];
+  const cTemppts = inComp ? makeTempPts(compRows, compStart)      : [];
+  const cHumpts  = inComp ? makePts(compRows, '_hum',  compStart) : [];
+
+  const xCfg       = inComp ? xAxisComparison() : xAxis();
+  const legendCfg  = { color: cssVar('--chart-legend'), font: { size: 11 }, boxWidth: 10, padding: 14 };
+  const pLabel     = inComp ? primaryRangeLabel() : '';
+  const cLabel     = inComp ? fmtDateRange(compStart, compEnd) : '';
 
   /* --- PM2.5 chart --- */
+  const pm25datasets = [
+    lineDs(pm25pts, '#3b82f6', inComp ? 'transparent' : cssVar('--chart-pm25-fill'), pLabel),
+  ];
+  if (inComp) pm25datasets.push(compDs(cPm25pts, '#10b981', cLabel));
+
   makeChart('cPM25', {
     type: 'line',
-    data: { datasets: [lineDs(pm25pts, '#3b82f6', cssVar('--chart-pm25-fill'))] },
+    data: { datasets: pm25datasets },
     options: {
       responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false }, tooltip: getTooltip() },
-      scales: { x: xAxis(), y: yAxis('µg/m³') },
+      plugins: {
+        legend: { display: inComp, labels: legendCfg },
+        tooltip: getTooltip(),
+      },
+      scales: { x: xCfg, y: yAxis('\u00b5g/m\u00b3') },
     },
   });
 
   /* --- PM10 chart --- */
+  const pm10datasets = [
+    lineDs(pm10pts, '#f59e0b', inComp ? 'transparent' : cssVar('--chart-pm10-fill'), pLabel),
+  ];
+  if (inComp) pm10datasets.push(compDs(cPm10pts, '#8b5cf6', cLabel));
+
   makeChart('cPM10', {
     type: 'line',
-    data: { datasets: [lineDs(pm10pts, '#f59e0b', cssVar('--chart-pm10-fill'))] },
+    data: { datasets: pm10datasets },
     options: {
       responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false }, tooltip: getTooltip() },
-      scales: { x: xAxis(), y: yAxis('µg/m³') },
+      plugins: {
+        legend: { display: inComp, labels: legendCfg },
+        tooltip: getTooltip(),
+      },
+      scales: { x: xCfg, y: yAxis('\u00b5g/m\u00b3') },
     },
   });
 
   /* --- Temperature & Humidity (dual y-axis) ---
      Temperature uses the left axis (yT), humidity the right (yH).
      The two axes share the same x-axis but have independent scales.   */
+  const thDatasets = [
+    lineDs(temppts, '#e53e3e', 'transparent', inComp ? `Temp \u2013 ${pLabel}` : `Temp (${tempUnit})`, 'yT'),
+    lineDs(humpts,  '#3182ce', 'transparent', inComp ? `Hum \u2013 ${pLabel}`  : 'Humidity (%)',       'yH'),
+  ];
+  if (inComp) {
+    thDatasets.push(compDs(cTemppts, '#f97316', `Temp \u2013 ${cLabel}`, 'yT'));
+    thDatasets.push(compDs(cHumpts,  '#06b6d4', `Hum \u2013 ${cLabel}`,  'yH'));
+  }
+
   makeChart('cTH', {
     type: 'line',
-    data: {
-      datasets: [
-        lineDs(temppts, '#e53e3e', 'transparent', `Temp (${tempUnit})`, 'yT'),
-        lineDs(humpts,  '#3182ce', 'transparent', 'Humidity (%)', 'yH'),
-      ],
-    },
+    data: { datasets: thDatasets },
     options: {
       responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: {
           display: true,
-          labels: { color: cssVar('--chart-legend'), font: { size: 11 }, boxWidth: 10, padding: 14 },
+          labels: legendCfg,
         },
         tooltip: getTooltip(),
       },
       scales: {
-        x:  xAxis(),
+        x:  xCfg,
         yT: yAxis(tempUnit, {
               position: 'left',
               beginAtZero: false,
@@ -1328,6 +1591,8 @@ function renderCharts() {
       },
     },
   });
+
+  renderComparisonSummary(rows, compRows);
 }
 
 /* ============================================================
